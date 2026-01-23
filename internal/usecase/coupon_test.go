@@ -7,6 +7,7 @@ import (
 
 	db "github.com/azizikri/flash-sale-coupon/db/gen"
 	"github.com/azizikri/flash-sale-coupon/internal/domain"
+	"github.com/azizikri/flash-sale-coupon/internal/repository"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -17,7 +18,7 @@ type mockStore struct {
 	decrementRemainingFn func(ctx context.Context, name string) (db.Coupon, error)
 	insertClaimFn        func(ctx context.Context, arg db.InsertClaimParams) (int64, error)
 	listClaimsByCouponFn func(ctx context.Context, couponName string) ([]string, error)
-	execTxFn             func(ctx context.Context, fn func(db.Querier) error) error
+	execTxFn             func(ctx context.Context, fn func(repository.Querier) error) error
 }
 
 func (m *mockStore) CreateCoupon(ctx context.Context, arg db.CreateCouponParams) (db.Coupon, error) {
@@ -55,7 +56,7 @@ func (m *mockStore) ListClaimsByCoupon(ctx context.Context, couponName string) (
 	return nil, nil
 }
 
-func (m *mockStore) ExecTx(ctx context.Context, fn func(db.Querier) error) error {
+func (m *mockStore) ExecTx(ctx context.Context, fn func(repository.Querier) error) error {
 	if m.execTxFn != nil {
 		return m.execTxFn(ctx, fn)
 	}

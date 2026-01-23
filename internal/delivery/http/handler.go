@@ -28,11 +28,11 @@ type CouponResponse struct {
 }
 
 type Handler struct {
-	service *usecase.CouponService
+	gateway usecase.CouponGateway
 }
 
-func NewHandler(service *usecase.CouponService) *Handler {
-	return &Handler{service: service}
+func NewHandler(gateway usecase.CouponGateway) *Handler {
+	return &Handler{gateway: gateway}
 }
 
 func (h *Handler) Routes(r chi.Router) {
@@ -50,7 +50,7 @@ func (h *Handler) CreateCoupon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.service.CreateCoupon(r.Context(), req.Name, req.Amount)
+	err := h.gateway.CreateCoupon(r.Context(), req.Name, req.Amount)
 	if err != nil {
 		if errors.Is(err, domain.ErrDuplicateCoupon) {
 			http.Error(w, "coupon already exists", http.StatusConflict)
@@ -70,7 +70,7 @@ func (h *Handler) ClaimCoupon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.service.ClaimCoupon(r.Context(), req.UserID, req.CouponName)
+	err := h.gateway.ClaimCoupon(r.Context(), req.UserID, req.CouponName)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			http.Error(w, "coupon not found", http.StatusNotFound)
@@ -94,7 +94,7 @@ func (h *Handler) ClaimCoupon(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetCouponDetails(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
-	coupon, err := h.service.GetCouponDetails(r.Context(), name)
+	coupon, err := h.gateway.GetCouponDetails(r.Context(), name)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			http.Error(w, "coupon not found", http.StatusNotFound)

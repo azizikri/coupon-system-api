@@ -4,13 +4,22 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/azizikri/flash-sale-coupon/db/gen"
+	db "github.com/azizikri/flash-sale-coupon/db/gen"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Store interface {
-	db.Querier
-	ExecTx(ctx context.Context, fn func(db.Querier) error) error
+	ExecTx(ctx context.Context, fn func(Querier) error) error
+	CreateCoupon(ctx context.Context, arg db.CreateCouponParams) (db.Coupon, error)
+	DecrementRemaining(ctx context.Context, name string) (db.Coupon, error)
+	GetCouponByName(ctx context.Context, name string) (db.Coupon, error)
+	InsertClaim(ctx context.Context, arg db.InsertClaimParams) (int64, error)
+	ListClaimsByCoupon(ctx context.Context, couponName string) ([]string, error)
+}
+
+type Querier interface {
+	InsertClaim(ctx context.Context, arg db.InsertClaimParams) (int64, error)
+	DecrementRemaining(ctx context.Context, name string) (db.Coupon, error)
 }
 
 type store struct {
@@ -25,7 +34,7 @@ func New(pool *pgxpool.Pool) Store {
 	}
 }
 
-func (s *store) ExecTx(ctx context.Context, fn func(db.Querier) error) error {
+func (s *store) ExecTx(ctx context.Context, fn func(Querier) error) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)

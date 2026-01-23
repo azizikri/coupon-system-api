@@ -35,7 +35,7 @@ func (s *CouponService) CreateCoupon(ctx context.Context, name string, amount in
 }
 
 func (s *CouponService) ClaimCoupon(ctx context.Context, userID, couponName string) error {
-	return s.store.ExecTx(ctx, func(q db.Querier) error {
+	return s.store.ExecTx(ctx, func(q repository.Querier) error {
 		rowsAffected, err := q.InsertClaim(ctx, db.InsertClaimParams{
 			UserID:     userID,
 			CouponName: couponName,
