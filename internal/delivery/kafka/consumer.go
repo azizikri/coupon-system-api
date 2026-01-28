@@ -9,6 +9,7 @@ import (
 	"github.com/azizikri/flash-sale-coupon/internal/usecase"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -104,7 +105,7 @@ func (c *Consumer) processRecord(ctx context.Context, record *kgo.Record) {
 func (c *Consumer) handleCreate(ctx context.Context, record *kgo.Record) {
 	var req RequestPayload
 	if err := json.Unmarshal(record.Value, &req); err != nil {
-		c.sendError(ctx, record, ErrCodeInvalidRequest, "invalid request payload")
+		c.sendError(ctx, record, ErrCodeInvalidRequest, "invalid request payload", 0)
 		return
 	}
 
@@ -112,6 +113,9 @@ func (c *Consumer) handleCreate(ctx context.Context, record *kgo.Record) {
 	var finalResp *ResponsePayload
 	if err != nil {
 		errorCode, message := mapCreateError(err)
+		if errorCode == ErrCodeInternalError {
+			c.sendToRetry(ctx, record, message)
+		}
 		finalResp = errorResponse(req.CorrelationID, errorCode, message)
 	} else {
 		finalResp = successResponse(req.CorrelationID, nil)
@@ -123,7 +127,7 @@ func (c *Consumer) handleCreate(ctx context.Context, record *kgo.Record) {
 func (c *Consumer) handleClaim(ctx context.Context, record *kgo.Record) {
 	var req RequestPayload
 	if err := json.Unmarshal(record.Value, &req); err != nil {
-		c.sendError(ctx, record, ErrCodeInvalidRequest, "invalid request payload")
+		c.sendError(ctx, record, ErrCodeInvalidRequest, "invalid request payload", 0)
 		return
 	}
 
@@ -131,6 +135,9 @@ func (c *Consumer) handleClaim(ctx context.Context, record *kgo.Record) {
 	var finalResp *ResponsePayload
 	if err != nil {
 		errorCode, message := mapClaimError(err)
+		if errorCode == ErrCodeInternalError {
+			c.sendToRetry(ctx, record, message)
+		}
 		finalResp = errorResponse(req.CorrelationID, errorCode, message)
 	} else {
 		finalResp = successResponse(req.CorrelationID, nil)
@@ -142,7 +149,7 @@ func (c *Consumer) handleClaim(ctx context.Context, record *kgo.Record) {
 func (c *Consumer) handleGet(ctx context.Context, record *kgo.Record) {
 	var req RequestPayload
 	if err := json.Unmarshal(record.Value, &req); err != nil {
-		c.sendError(ctx, record, ErrCodeInvalidRequest, "invalid request payload")
+		c.sendError(ctx, record, ErrCodeInvalidRequest, "invalid request payload", 0)
 		return
 	}
 
@@ -150,6 +157,9 @@ func (c *Consumer) handleGet(ctx context.Context, record *kgo.Record) {
 	var finalResp *ResponsePayload
 	if err != nil {
 		errorCode, message := mapGetError(err)
+		if errorCode == ErrCodeInternalError {
+			c.sendToRetry(ctx, record, message)
+		}
 		finalResp = errorResponse(req.CorrelationID, errorCode, message)
 	} else {
 		finalResp = successResponse(req.CorrelationID, coupon)
@@ -169,7 +179,7 @@ func (c *Consumer) sendResponse(ctx context.Context, topic string, resp *Respons
 	}
 }
 
-func (c *Consumer) sendError(ctx context.Context, record *kgo.Record, code, message string) {
+func (c *Consumer) sendError(ctx context.Context, record *kgo.Record, code, message string, attempts int) {
 	var req RequestPayload
 	_ = json.Unmarshal(record.Value, &req)
 
@@ -178,15 +188,7 @@ func (c *Consumer) sendError(ctx context.Context, record *kgo.Record, code, mess
 		c.sendResponse(ctx, req.ReplyTo, resp)
 	}
 
-	dlqTopic := record.Topic + TopicDLQSuffix
-	dlqRecord := &kgo.Record{
-		Topic: dlqTopic,
-		Value: record.Value,
-		Headers: []kgo.RecordHeader{
-			{Key: ErrorHeaderKey, Value: []byte(message)},
-		},
-	}
-	_ = c.client.ProduceSync(ctx, dlqRecord).FirstErr()
+	c.sendToDLQ(ctx, record, message, attempts)
 }
 
 func retryNextAt(record *kgo.Record) (time.Time, bool) {
@@ -202,6 +204,91 @@ func retryNextAt(record *kgo.Record) (time.Time, bool) {
 	}
 
 	return time.Time{}, false
+}
+
+func retryAttempts(record *kgo.Record) int {
+	for _, header := range record.Headers {
+		if header.Key != RetryHeaderAttempts {
+			continue
+		}
+		attempts, err := strconv.Atoi(string(header.Value))
+		if err != nil {
+			return 0
+		}
+		return attempts
+	}
+	return 0
+}
+
+func retryDelay(attempt int) time.Duration {
+	if attempt <= 1 {
+		return RetryBaseDelay
+	}
+	backoff := RetryBaseDelay * time.Duration(1<<uint(attempt-1))
+	if backoff > RetryMaxDelay {
+		return RetryMaxDelay
+	}
+	return backoff
+}
+
+func requestToRetryTopic(topic string) string {
+	if strings.HasSuffix(topic, TopicRetrySuffix) {
+		return topic
+	}
+	if strings.HasSuffix(topic, TopicRequestSuffix) {
+		return strings.TrimSuffix(topic, TopicRequestSuffix) + TopicRetrySuffix
+	}
+	return topic + TopicRetrySuffix
+}
+
+func upsertHeader(headers []kgo.RecordHeader, key string, value []byte) []kgo.RecordHeader {
+	for i := range headers {
+		if headers[i].Key == key {
+			headers[i].Value = value
+			return headers
+		}
+	}
+	return append(headers, kgo.RecordHeader{Key: key, Value: value})
+}
+
+func (c *Consumer) sendToRetry(ctx context.Context, record *kgo.Record, message string) bool {
+	attempts := retryAttempts(record) + 1
+	if attempts > MaxRetryAttempts {
+		c.sendToDLQ(ctx, record, message, attempts)
+		return false
+	}
+
+	nextAt := time.Now().Add(retryDelay(attempts)).Format(time.RFC3339)
+	headers := upsertHeader(record.Headers, RetryHeaderNextAt, []byte(nextAt))
+	headers = upsertHeader(headers, RetryHeaderAttempts, []byte(strconv.Itoa(attempts)))
+	headers = upsertHeader(headers, ErrorHeaderKey, []byte(message))
+
+	retryRecord := &kgo.Record{
+		Topic:   requestToRetryTopic(record.Topic),
+		Key:     record.Key,
+		Value:   record.Value,
+		Headers: headers,
+	}
+	if err := c.client.ProduceSync(ctx, retryRecord).FirstErr(); err != nil {
+		log.Printf("Failed to enqueue retry record: %v", err)
+		return false
+	}
+	return true
+}
+
+func (c *Consumer) sendToDLQ(ctx context.Context, record *kgo.Record, message string, attempts int) {
+	headers := upsertHeader(record.Headers, ErrorHeaderKey, []byte(message))
+	if attempts > 0 {
+		headers = upsertHeader(headers, RetryHeaderAttempts, []byte(strconv.Itoa(attempts)))
+	}
+
+	dlqTopic := record.Topic + TopicDLQSuffix
+	dlqRecord := &kgo.Record{
+		Topic:   dlqTopic,
+		Value:   record.Value,
+		Headers: headers,
+	}
+	_ = c.client.ProduceSync(ctx, dlqRecord).FirstErr()
 }
 
 func successResponse(correlationID string, coupon *domain.Coupon) *ResponsePayload {

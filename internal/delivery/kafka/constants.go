@@ -14,8 +14,12 @@ const (
 	TopicRetrySuffix   = ".retry"
 	TopicDLQSuffix     = ".dlq"
 
-	RequestTimeout = 3 * time.Second
+	RequestTimeout   = 3 * time.Second
+	MaxRetryAttempts = 3
+	RetryBaseDelay   = 1 * time.Second
+	RetryMaxDelay    = 30 * time.Second
 
-	RetryHeaderNextAt = "x-next-at"
-	ErrorHeaderKey    = "x-error"
+	RetryHeaderNextAt   = "x-next-at"
+	RetryHeaderAttempts = "x-retry-attempt"
+	ErrorHeaderKey      = "x-error"
 )
